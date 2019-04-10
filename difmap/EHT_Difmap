@@ -1,0 +1,247 @@
+! DIFMAP script for imaging EHT data using a given mask (set of cleaning windows)
+!
+! Requires Caltech's DIFMAP software for CLEAN imaging reconstruction
+! version v2.5b or above that can be obtained from 
+! ftp://ftp.astro.caltech.edu/pub/difmap/difmap.html
+! ===============================================================================
+!
+! DIFMAP script developed by the EHT Collaboration
+!
+! ===>> Calling sequence
+! @EHT_difmap uf_file,Mask,rms_target,compact_flux,ALMA_weight,uvbin,uvpower
+!
+! To reproduce fiducial EHT images of M87:
+! 1.- Place i) uv FITS file "your_file_name.uvfits", ii) Difmap script EHT_Difmap (this file), 
+!     and iii) mask CircMask_r30_x-0.002_y0.022.win in the same directory
+! 2.- Run Difmap and use the calling sequence:
+!     @EHT_difmap your_file_name,CircMask_r30_x-0.002_y0.022,-10,0.5,0.1,2,-1
+!     (For your convenience, it is better to do not give spaces in between the parameters.) 
+!     (There is no problem at all in running the script but the relevant outputs will have spaces in its names.) 
+!
+
+
+! Definition of variables
+! -----------------------
+logical interactive
+logical LMT_amp_gains
+logical remove_gaussian
+logical save_results
+integer clean_niter
+float clean_gain
+float compact_flux
+float cp_fl
+float ALMA_weight
+float uvz_flux
+float uvz_weight
+integer nx,ny
+float dx,dy
+float res_rms_noise
+float rms_target
+float pico
+float old_chisq
+float dynam
+float solint(20)
+
+
+
+! Set of parameters to choose
+! ===========================
+
+! Cleaning parameters: gain and number of iterations
+clean_gain = 0.02
+clean_niter = 100
+
+! Target relative rms reduction during cleaning. Use a large negative number
+! to ignore this, using only a target compact flux criterium
+rms_target = %3
+
+! Target compact flux. Use a large value (i.e. > 10) to ignore this
+compact_flux = %4
+
+! Possibility to down-weight ALMA. If not, use ALMA_weight=1.0
+ALMA_weight = %5
+
+! Possibility to force LMT amplitude gains to initial phase-only image
+LMT_amp_gains = True
+
+! Interactive (shows clean images)
+interactive = False
+
+! Save results
+save_results = True
+
+! To remove Gaussian in final image
+remove_gaussian = True
+
+! Dynamic range in the residual map cleaning stopping criteria. Use 0 to ignore
+dynam = 0
+
+! Zero flux and weight
+uvz_flux = 1.2
+uvz_weight = 10
+
+! Mapsize
+nx=1024
+ny=1024
+
+! Pixelsize
+dx=0.002
+dy=0.002
+
+
+! ### Routines ###
+
+! => Clean+selfcal with several stopping criteria:
+!    1) Relative decrease in the residuals rms is below a given threshold
+!    2) A desired cleaned compact flux is reached
+!    3) The visibilities chi2 increases
+!    4) Residual map dynamic range is below a given threshold
+!    Keyword %3 establishes whether intermediate selfcal is performed
+#+clean_rms_or_flux \
+  repeat ;\
+    res_rms_noise = imstat(rms)/imstat(noise) ;\
+    old_chisq = uvstat(chisq) ;\
+    clean clean_niter,clean_gain ;\
+    cp_fl = model_flux ;\
+    if (%3) selfcal ;\
+    if (model_flux >= %1 | peak(flux,max) <= imstat(rms) * dynam | \
+        uvstat(chisq) >=  old_chisq) ;\
+      break ;\
+    end if ;\
+  until ((res_rms_noise-imstat(rms)/imstat(noise))/res_rms_noise <= %2) ;\
+  selfcal
+
+! => Clean map without contours
+#+limp docont=false;mapl clean;docont=true
+
+! => Flagging and unflagging of intra-site baselines
+#+flag_intra flag aa-ap,true;flag jc-sm,true
+#+unflag_intra unflag aa-ap,true;unflag jc-sm,true
+
+! => Adding a new gaussian component to recover the zero-flux followed by a 
+!    round of model-fitting and phase self-calibration. Size fixed
+#+add_gauss \
+  addcmp uvz_flux-model_flux,true,0,0,true,2.0,true ;\
+  modelfit 50 ;\
+  selfcal
+
+
+! ### Main script ###
+! ###################
+
+
+! Selects input uv data
+observe %1.uvfits
+
+! Cleaning Stokes I image
+select pi
+
+! New weight for ALMA
+selfant aa,false,ALMA_weight
+
+! Map size
+mapsize nx,dx,ny,dy
+
+! Zero flux and weight
+uvzero uvz_flux,uvz_weight
+
+! Uniform weight
+uvweight %6,%7
+
+! First phase self-cal
+startmod
+
+! Reading the file specifying clean windows (mask)
+rwin %2.win
+
+!>> First cleaning and phase self-calibration
+clean_rms_or_flux compact_flux,rms_target,true
+add_gauss
+if (interactive) ;\
+ print ""; print "  ==> Phase-only self-calibration image  <=="; print "" ;\
+ delwin; device /xw; limp; rwin %2.win; end if
+
+!<< Option for forcing LMT amplitude gains to initial phase-only map >>
+!   solint of 10 minutes
+if (LMT_amp_gains) ;\
+  selfant ,true ;\
+  selfant LM,false ;\
+  selfcal true,true,10 ;\
+  selfant ,false ;\
+  clrmod true,true ;\
+  clean_rms_or_flux compact_flux,rms_target,true ;\
+  add_gauss ;\
+  print ""; print "  ==> Phase-only (fixed LMT gains) image  <=="; print "" ;\
+  if (interactive); delwin; limp; rwin %2.win; end if ;\
+end if
+
+!>> Global amplitude calibration not normalized (observed flux may change)
+gscale true
+
+!>> Cleaning first gscale map
+clrmod true,true
+clean_rms_or_flux compact_flux,rms_target,false
+add_gauss
+
+if (interactive) ;\
+  print ""; print "  ==> gscale-only self-calibration image  <=="; print "" ;\
+  delwin; limp ; rwin %2.win ;\
+  end if
+
+!>> Rounds of amplitude self-calibration
+solint = 240,120,60,30,30,20,10,10,5,5,2,2,1,1,0.5,0.5,0,0,0,0
+do i=1,20 ;\
+  selflims 1.2 ;\
+  selfcal true,true,solint(i) ;\
+  clrmod true,true ;\
+  clean_rms_or_flux compact_flux,rms_target,false ;\
+  add_gauss ;\
+  if (interactive) ;\
+    print ""; print "  ==> Amp+phs",solint(i),"self-cal image  <=="; print "" ;\
+    delwin; limp; rwin %2.win ;\
+  end if ;\
+end do
+
+! If removing Gaussian in final image
+if (remove_gaussian) ;\
+  clrmod true,true ;\
+  clean_rms_or_flux compact_flux,rms_target,false ;\
+  flag_intra ;\
+end if
+
+!>> Final statistics
+restore
+pico=peak(flux,max)
+invert
+print ""; print "  ==> Image statistic  <=="; print ""
+print "  ==> Cleaned compact flux ",cp_fl
+print "  ==> Image total flux ",model_flux
+if (remove_gaussian) ;\
+  print "  ==> Gaussian component removed and intra-sites flagged" ; end if
+print "  ==> Chi2: ", uvstat(chisq)
+print "  ==> rms data-model ", uvstat(rms),"Jy"
+print "  ==> Expected image noise", imstat(noise),"Jy/beam"
+print "  ==> Actual image noise", imstat(rms),"Jy/beam"
+print "  ==> Dynamic range (over 3-sigma)",pico/(3*imstat(rms))
+
+!>> Saving final files
+if (save_results) ;\
+  integer of ;\
+  of = outfile(%1.%2.RT%3.CF%4.ALMA%5.UVW%6_%7.stat) ;\
+  fprintf of, "ALMA weight=" // strnum(ALMA_weight) // "\n" ;\
+  fprintf of, "Compact flux="//strnum(cp_fl) // "\n" ;\
+  fprintf of, "Total flux=" // strnum(model_flux) // "\n" ;\
+  fprintf of, "Chi2= " // strnum(uvstat(chisq)) // "\n" ;\
+  fprintf of, "Image rms=" // strnum(imstat(rms)) // "\n" ;\
+  fprintf of, "Dynamic range=" // strnum(pico/(3*imstat(rms))) ;\
+  close(of) ;
+  save %1.%2.RT%3.CF%4.ALMA%5.UVW%6_%7
+  restore 0,0,0,true ;\
+  wmap %1.%2.RT%3.CF%4.ALMA%5.UVW%6_%7.noresiduals.fits ;\
+end if
+
+if (interactive) ;\
+  loglevs 3*imstat(rms)/pico*100. ;\
+  mapl cln ;\
+  print ""; print "  ==> Final image  <=="; print "" ;\
+  end if
