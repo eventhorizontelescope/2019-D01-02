@@ -152,12 +152,11 @@ if args.infile2 == '':
     obs = eh.obsdata.load_uvfits(obsfile)
 
     # scan-average the data
-    if args.scanavg:
-        # identify the scans (times of continous observation) in the data
-        obs.add_scans()
+    # identify the scans (times of continous observation) in the data
+    obs.add_scans()
 
-        # coherently average the scans, which can be averaged due to ad-hoc phasing
-        obs = obs.avg_coherent(0.,scan_avg=True)
+    # coherently average the scans, which can be averaged due to ad-hoc phasing
+    obs = obs.avg_coherent(0.,scan_avg=True)
 
 # If two uvfits files are passed as input (e.g., high and low band) then use both datasets,
 # but do not form closure quantities between the two datasets
@@ -367,6 +366,3 @@ if args.imgsum:
     matplotlib.pyplot.close('all')
     outimgsum = os.path.splitext(args.outfile)[0] + '_imgsum.pdf'
     eh.imgsum(im_addcmp, obs_sc_addcmp, obs_orig, outimgsum ,cp_uv_min=uv_zblcut)
-
-
-
